@@ -1,3 +1,5 @@
+import pandas as pd
+
 class Spectra(object):
 
     def __init__(self, ppm, intensity):
@@ -6,8 +8,29 @@ class Spectra(object):
 
 class Database(object):
 
-    def __init__(self):
+    def __init__(self, from_file=None):
+
         self.metabolites = {}
+
+        df = pd.read_csv(from_file)
+        for idx, row in df.iterrows():
+
+            if row['enabled'] == 'Y':
+                try:
+
+                    m = Metabolite(row['name'])
+                    ppm = float(row['ppm'])
+                    start = float(row['start'])
+                    end = float(row['end'])
+
+                    m.add(ppm=row['ppm'], ppm_range=(start, end), couple_code=row['couple_code'],
+                          j_constant=row['j_constant'], rel_intensity=row['rel_intensity'])
+                    self.add(m)
+                    print m
+
+                except ValueError as e:
+                    print 'Error parsing %s: %s' % (m.name, e)
+                    continue
 
     def add(self, m):
         self.metabolites[m.name] = m
@@ -55,6 +78,7 @@ class Multiplet(object):
         self.rel_intensity = rel_intensity
 
     def __repr__(self):
-        output = '(ppm=%s, couple_code=%s, j_constant=%s, rel_intensity=%s)' % (self.ppm,
+        output = '(ppm=%s, ppm_range=%s, couple_code=%s, j_constant=%s, rel_intensity=%s)' % (
+                    self.ppm, self.ppm_range,
                     self.couple_code, self.j_constant, self.rel_intensity)
         return output
