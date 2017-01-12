@@ -89,7 +89,7 @@ class PyBatmanPipeline(object):
                     tsp_concentration, concentration, self.tsp_rel_intensity)
                 rel_intensities.append(corrected)
 
-            corrected = np.mean(rel_intensities)
+            corrected = np.median(rel_intensities)
             print 'Rel. intensities: initial = %f, corrected = %f\n' % (u.rel_intensity, corrected)
             u.rel_intensity = corrected
 
