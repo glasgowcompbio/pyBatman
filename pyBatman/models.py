@@ -12,10 +12,11 @@ class Database(object):
 
         self.metabolites = {}
 
-        df = pd.read_csv(from_file)
-        for idx, row in df.iterrows():
+        self.df = pd.read_csv(from_file)
+        for idx, row in self.df.iterrows():
 
             if row['enabled'] == 'Y':
+
                 try:
 
                     m = Metabolite(row['name'])
@@ -26,7 +27,6 @@ class Database(object):
                     m.add(ppm=row['ppm'], ppm_range=(start, end), couple_code=row['couple_code'],
                           j_constant=row['j_constant'], rel_intensity=row['rel_intensity'])
                     self.add(m)
-                    print m
 
                 except ValueError as e:
                     print 'Error parsing %s: %s' % (m.name, e)
@@ -37,6 +37,11 @@ class Database(object):
 
     def find(self, name):
         return self.metabolites[name]
+
+    def get_names(self):
+        names = self.metabolites.keys()
+        names.remove('TSP')
+        return sorted(names)
 
     def __repr__(self):
         output = ''

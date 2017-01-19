@@ -91,7 +91,12 @@ class PyBatmanPipeline(object):
 
             corrected = np.median(rel_intensities)
             print 'Rel. intensities: initial = %f, corrected = %f\n' % (u.rel_intensity, corrected)
+
+            # update the relative intensity of the multiplet in copy_db
             u.rel_intensity = corrected
+
+            # update in the dataframe representation as well
+            copy_db.df.rel_intensity[copy_db.df.name == metabolite_name] = corrected
 
         return copy_db
 
@@ -128,7 +133,10 @@ class PyBatmanPipeline(object):
             self.working_dir, self.db, verbose=verbose)
 
         # get default parameters
-        metabolites = [metabolite_name]
+        if type(metabolite_name) is list or type(metabolite_name) is tuple:
+            metabolites = metabolite_name
+        else:
+            metabolites = [metabolite_name]
         default = bm.get_default_params(metabolites)
 
         # perform background correction using default parameters
@@ -137,7 +145,7 @@ class PyBatmanPipeline(object):
 
         print
         print '================================================================='
-        print 'Fitting %s' % metabolite_name
+        print 'Fitting:\n%s' % '\n'.join(metabolites)
         print '================================================================='
         print
         meta_fits = self._iterate(bm, options, n_iter)
@@ -146,7 +154,7 @@ class PyBatmanPipeline(object):
         # add mean RMSE and metabolite fits
         results = {}
         results['mean_rmse'] = mean_rmse
-        results[metabolite_name] = meta_fits
+        results['spectra_fit'] = meta_fits
 
         # add TSP fits
         metabolites = ['TSP']
@@ -159,21 +167,49 @@ class PyBatmanPipeline(object):
         print '================================================================='
         print
         tsp_fits = self._iterate(bm, options_tsp, n_iter)
-        results['TSP'] = tsp_fits
+        results['TSP_fit'] = tsp_fits
+
+        # print
+        # print '================================================================='
+        # print 'Results'
+        # print '================================================================='
+        # print
+        # betas, tsp_betas = self.get_map_betas(results, metabolite_name)
+        # beta_m = np.median(betas)
+        # beta_tsp = np.median(tsp_betas)
+        # predicted = beta_m / beta_tsp * tsp_concentration
+        #
+        # print betas
+        # print tsp_betas
+        # print 'Predicted concentration for %s = %.4f μM' % (metabolite_name, predicted)
+        #
+        return results
+
+    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, verbose=False, correct_background=True):
+
+        print 'Loading spectra from %s' % spectra_dir
+        bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
+            self.working_dir, self.db, verbose=verbose)
+
+        metabolites = [metabolite_name]
+        default = bm.get_default_params(metabolites)
+        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
+
+        if correct_background:
+            bm.background_correct(options, make_plot=self.make_plot)
 
         print
         print '================================================================='
-        print 'Results'
+        print 'Fitting:\n%s' % '\n'.join(metabolites)
         print '================================================================='
         print
-        betas, tsp_betas = self.get_map_betas(results, metabolite_name)
-        beta_m = np.median(betas)
-        beta_tsp = np.median(tsp_betas)
-        predicted = beta_m / beta_tsp * tsp_concentration
+        meta_fits = self._iterate(bm, options, n_iter)
+        mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
 
-        print betas
-        print tsp_betas
-        print 'Predicted concentration for %s = %.4f μM' % (metabolite_name, predicted)
+        # add mean RMSE and metabolite fits
+        results = {}
+        results['mean_rmse'] = mean_rmse
+        results['spectra_fit'] = meta_fits
 
         return results
 
@@ -434,9 +470,9 @@ class PyBatman(object):
             sink_r()
 
         # cleaning up ..
-        # shutil.rmtree(temp_dir)
-        # if verbose:
-        #     print 'Deleted', temp_dir
+        shutil.rmtree(temp_dir)
+        if verbose:
+            print 'Deleted', temp_dir
 
         return bm
 
@@ -507,7 +543,10 @@ class PyBatman(object):
 
         for i in range(1, n_col):
 
-            intensity = self.spectra_data[:, i]
+            intensity = np.copy(self.spectra_data[:, i])
+            corrected_intensity = intensity - background
+            self.spectra_data[:, i] = corrected_intensity
+
             selected = options.selected
             label = self.labels[i-1]
 
@@ -516,18 +555,12 @@ class PyBatman(object):
                 if len(ranges) > 0:
                     for lower, upper in ranges:
                         idx = (ppm > lower) & (ppm < upper)
-                        selected_intensity = intensity[idx]
-                        selected_ppm = ppm[idx]
-                        selected_background = background[idx]
-                        corrected_intensity = selected_intensity - selected_background
-                        intensity[idx] = corrected_intensity
-
                         if make_plot:
                             f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
                             title = '(%.4f-%.4f)' % (lower, upper)
-                            ax1.plot(selected_ppm, selected_intensity, 'b', label='Spectra')
-                            ax1.plot(selected_ppm, selected_background, 'k--', label='Background')
-                            ax1.plot(selected_ppm, corrected_intensity, 'g', label='Spectra - Background')
+                            ax1.plot(ppm[idx], intensity[idx], 'b', label='Spectra')
+                            ax1.plot(ppm[idx], background[idx], 'k--', label='Background')
+                            ax1.plot(ppm[idx], corrected_intensity[idx], 'g', label='Spectra - Background')
                             ax1.set_xlabel('ppm')
                             ax1.set_ylabel('intensity')
                             ax1.legend(loc='best')
@@ -536,7 +569,7 @@ class PyBatman(object):
 
                             idx = (ppm > lower-0.05) & (ppm < upper+0.05)
                             title = 'Corrected (%.4f-%.4f)' % (lower-0.05, upper+0.05)
-                            ax2.plot(ppm[idx], intensity[idx], 'b')
+                            ax2.plot(ppm[idx], corrected_intensity[idx], 'b')
                             ax2.set_xlabel('ppm')
                             ax2.invert_xaxis()
                             ax2.set_title(title)
@@ -544,8 +577,6 @@ class PyBatman(object):
                             plt.suptitle('%s %s' % (label, metabolite.name), fontsize=16, y=1.08)
                             plt.tight_layout()
                             plt.show()
-
-                        assert np.array_equal(self.spectra_data[:, i], intensity)
 
     def _select_metabolites(self, names):
         selected = []
