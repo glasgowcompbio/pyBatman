@@ -1,54 +1,75 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import os
 import datetime
-import numpy as np
-from scipy import signal
-import nmrglue as ng
-import pandas as pd
-from random import randint
-import scipy.interpolate as interpolate
-
-import os
-from collections import OrderedDict, namedtuple
-import multiprocessing
-import json
 import errno
-import os
 import tempfile
 import shutil
-from distutils.dir_util import copy_tree
-import sys
 import copy
 import cPickle
 import gzip
+from collections import OrderedDict
+from distutils.dir_util import copy_tree
+from random import randint
 
-from IPython.display import display, HTML
+import multiprocessing
+import json
+import numpy as np
+import nmrglue as ng
+import pandas as pd
+import scipy.interpolate as interpolate
+
 import matplotlib.pyplot as plt
 import pylab as plt
-from plotly import tools
-import plotly.plotly as py
-import plotly.graph_objs as go
-import plotly
+import seaborn
+from IPython.display import display
 
-from parallel_calls import par_run_bm
-from models import Spectra
+from .parallel_calls import par_run_bm
+from .models import Spectra, Database
+from .helper import mkdir_p, load_config, sub_dir_path
+
+def start_analysis(config_filename):
+
+    config = load_config(config_filename)
+
+    background_dir = config['background_dir']
+    pattern = config['pattern']
+    working_dir = config['working_dir']
+    db = config['database']
+    spectra_dir = config['spectra_dir']
+    n_burnin = config['n_burnin']
+    n_sample = config['n_sample']
+    n_iter = config['n_iter']
+    tsp_concentration = config['tsp_concentration']
+    output_dir = config['output_dir']
+    verbose = True if config['verbose'] == 'True' else False
+
+    input_spectra = sub_dir_path(spectra_dir)
+    input_backgrounds = sub_dir_path(background_dir)
+
+    pipeline = PyBatmanPipeline(input_backgrounds, pattern, working_dir, db)
+    for sd in input_spectra:
+        df, fit_results = pipeline.predict_conc(sd, n_burnin, n_sample, n_iter,
+                                                tsp_concentration, verbose=verbose)
+        pipeline.save_results(sd, df, fit_results, output_dir)
 
 class PyBatmanPipeline(object):
 
-    def __init__(self, background_dir, pattern, working_dir, db, make_plot=True):
+    def __init__(self, background_dir, pattern, working_dir, database, make_plot=True):
 
         self.background_dir = background_dir
         self.pattern = pattern
         self.working_dir = working_dir
-        self.db = db
+        self.db = Database(from_file=database)
         self.make_plot = make_plot
         self.spiked_bm = {}
 
-        for m in db.metabolites:
+        for m in self.db.metabolites:
             if m == 'TSP':
-                m_tsp = db.metabolites[m]
-                self.tsp_rel_intensity = m_tsp.multiplets[0].rel_intensity
+                tsp_multiplet = self.db.metabolites[m].multiplets[0]
+                self.tsp_rel_intensity = tsp_multiplet.rel_intensity
+                self.tsp_range = tsp_multiplet.ppm_range
 
     def load_spiked(self, metabolite_name, concentration, spectra_dir, verbose=False):
 
@@ -63,7 +84,8 @@ class PyBatmanPipeline(object):
         default = bm.get_default_params(metabolites)
 
         # perform background correction using default parameters
-        bm.background_correct(default, make_plot=self.make_plot)
+        exclude_regions = [self.tsp_range]
+        bm.background_correct(default, make_plot=self.make_plot, exclude=exclude_regions)
 
         # perform baseline correction using default parameters
         # bm.baseline_correct(default)
@@ -100,152 +122,108 @@ class PyBatmanPipeline(object):
 
         return copy_db
 
-    def run(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, verbose=False, n_plots=3):
+    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
+                              verbose=False, n_plots=3, correct_background=True):
 
-        print 'Loading spectra from %s' % spectra_dir
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
             self.working_dir, self.db, verbose=verbose)
 
         # get default parameters
-        metabolites = [metabolite_name]
-        default = bm.get_default_params(metabolites)
-        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
-
-        print
-        print '================================================================='
-        print 'Fitting %s' % metabolite_name
-        print '================================================================='
-        print
-        meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
-        mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
-
-        # add mean RMSE and metabolite fits
-        results = {}
-        results['mean_rmse'] = mean_rmse
-        results[metabolite_name] = meta_fits
-
-        return results
-
-    def predict_conc(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, tsp_concentration, verbose=False):
-
-        print 'Loading spectra from %s' % spectra_dir
-        bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
-            self.working_dir, self.db, verbose=verbose)
-
-        # get default parameters
-        if type(metabolite_name) is list or type(metabolite_name) is tuple:
-            metabolites = metabolite_name
-        else:
-            metabolites = [metabolite_name]
-        default = bm.get_default_params(metabolites)
-
-        # perform background correction using default parameters
-        bm.background_correct(default, make_plot=self.make_plot)
-        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
-
-        print
-        print '================================================================='
-        print 'Fitting:\n%s' % '\n'.join(metabolites)
-        print '================================================================='
-        print
-        meta_fits = self._iterate(bm, options, n_iter)
-        mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
-
-        # add mean RMSE and metabolite fits
-        results = {}
-        results['mean_rmse'] = mean_rmse
-        results['spectra_fit'] = meta_fits
-
-        # add TSP fits
-        metabolites = ['TSP']
-        default_tsp = bm.get_default_params(metabolites)
-        options_tsp = default_tsp.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
-
-        print
-        print '================================================================='
-        print 'Fitting TSP'
-        print '================================================================='
-        print
-        tsp_fits = self._iterate(bm, options_tsp, n_iter)
-        results['TSP_fit'] = tsp_fits
-
-        # print
-        # print '================================================================='
-        # print 'Results'
-        # print '================================================================='
-        # print
-        # betas, tsp_betas = self.get_map_betas(results, metabolite_name)
-        # beta_m = np.median(betas)
-        # beta_tsp = np.median(tsp_betas)
-        # predicted = beta_m / beta_tsp * tsp_concentration
-        #
-        # print betas
-        # print tsp_betas
-        # print 'Predicted concentration for %s = %.4f μM' % (metabolite_name, predicted)
-        #
-        return results
-
-    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, verbose=False, correct_background=True):
-
-        print 'Loading spectra from %s' % spectra_dir
-        bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
-            self.working_dir, self.db, verbose=verbose)
-
         metabolites = [metabolite_name]
         default = bm.get_default_params(metabolites)
         options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
 
         if correct_background:
-            bm.background_correct(options, make_plot=self.make_plot)
+            bm.background_correct(default, make_plot=self.make_plot)
 
+        print 'Fitting %s' % metabolite_name
+        meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
+        # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
+        return meta_fits
+
+    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter, tsp_concentration, verbose=False):
+
+        multiplets = self.db.get_names()
+        if verbose:
+            print multiplets
+
+        fit_results = {}
+        for name in multiplets:
+            print
+            print '================================================================='
+            print 'Now fitting %s for %s' % (name, spectra_dir)
+            print '================================================================='
+            print
+            if name == 'TSP':
+                correct_background = False
+            else:
+                correct_background = True
+            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample, n_iter,
+                                                           correct_background=correct_background)
+
+        # predict the concentrations of metabolites
         print
         print '================================================================='
-        print 'Fitting:\n%s' % '\n'.join(metabolites)
+        print 'Results'
         print '================================================================='
         print
-        meta_fits = self._iterate(bm, options, n_iter)
-        mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
+        df = self.get_results(multiplets, fit_results, tsp_concentration)
+        return df, fit_results
 
-        # add mean RMSE and metabolite fits
-        results = {}
-        results['mean_rmse'] = mean_rmse
-        results['spectra_fit'] = meta_fits
+    def save_results(self, sd, df, fit_results, output_dir):
+        base_name = os.path.basename(os.path.normpath(sd))
+        # timestr = time.strftime("%Y%m%d_%H%M%S")
+        output_csv = os.path.join(output_dir, '%s.csv' % base_name)
+        output_model = os.path.join(output_dir, '%s.p' % base_name)
 
-        return results
+        # save the dataframe to csv and also the model as pickled objects
+        display(df)
+        print 'Saving CSV output to %s' % output_csv
+        df.to_csv(output_csv, index=False)
 
-    def get_map_betas(self, results, metabolite_name):
+        with gzip.GzipFile(output_model, 'wb') as f:
+            print 'Saving model to %s' % output_model
+            cPickle.dump(fit_results, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
-        meta_fits = results[metabolite_name]
-        meta_betas = []
-        for bm_out in meta_fits:
-            meta_betas.append(bm_out.beta_df.values[0][0])
-        meta_betas = np.array(meta_betas)
+    def get_betas(self, bm_out_list):
+        all_betas = []
+        for bm_out in bm_out_list:
+            df = bm_out.beta_df
+            names = df.index.values
+            first_col = df.ix[:,0]
+            betas = first_col.values
+            all_betas.append(betas)
+        return names, np.array(all_betas)
 
-        tsp_fits = results['TSP']
-        tsp_betas = []
-        for bm_out in tsp_fits:
-            tsp_betas.append(bm_out.beta_df.values[0][0])
-        tsp_betas = np.array(tsp_betas)
+    def get_results(self, multiplets, fit_results, tsp_concentration):
+        betas = []
+        for name in multiplets:
+            if name == 'TSP':
+                continue
+            fit_names, fit_betas = self.get_betas(fit_results[name])
+            b = fit_betas.flatten()
+            betas.append(b)
 
-        if self.make_plot:
-            f, (ax1, ax2) = plt.subplots(1, 2)
-            ax1.boxplot(meta_betas)
-            ax1.set_title('MAP Betas -- %s' % metabolite_name)
-            ax2.boxplot(tsp_betas)
-            ax2.set_title('MAP Betas -- TSP')
-            plt.tight_layout()
+        betas = np.array(betas)
+        betas = betas.transpose()
 
-        return meta_betas, tsp_betas
+        plt.boxplot(betas)
+        ticks = np.arange(len(multiplets)) + 1
+        plt.xticks(ticks, multiplets, rotation='vertical')
+        plt.title('Betas')
+        plt.show()
 
-    @classmethod
-    def load_db(cls, filename):
-        with gzip.GzipFile(filename, 'rb') as f:
-            db = cPickle.load(f)
-            return db
+        metabolite_names = multiplets
+        metabolite_betas = betas
+        fit_names, fit_betas = self.get_betas(fit_results['TSP'])
+        tsp_betas = fit_betas.flatten()
 
-    def save_db(self, db, filename):
-        with gzip.GzipFile(filename, 'wb') as f:
-            cPickle.dump(db, f, protocol=cPickle.HIGHEST_PROTOCOL)
+        beta_m = np.median(metabolite_betas, axis=0)
+        beta_tsp = np.median(tsp_betas, axis=0)
+        predicted = beta_m / beta_tsp * tsp_concentration
+        rows = zip(metabolite_names, predicted)
+        df = pd.DataFrame(rows, columns=['Metabolite', 'Concentration (μM)'])
+        return df
 
     def _get_corrected_intensity(self, spectra_data, integrate_range, tsp_conc, metabo_conc, tsp_protons):
 
@@ -354,29 +332,6 @@ class PyBatman(object):
             plt.title('%s at (%.4f-%.4f)' % (name, lower, upper))
             plt.show()
 
-    def plotly_spectra(self):
-        data = []
-        for spec in self.spectra:
-            trace = go.Scatter(
-                x = spec.ppm,
-                y = spec.intensity
-            )
-            data.append(trace)
-        plotly.offline.iplot(data)
-
-    def plotly_data(self):
-        data = []
-        x = self.spectra_data[:, 0]
-        n_row, n_col = self.spectra_data.shape
-        for i in range(1, n_col):
-            y = self.spectra_data[:, i]
-            trace = go.Scatter(
-                x = x,
-                y = y
-            )
-            data.append(trace)
-        plotly.offline.iplot(data)
-
     def get_default_params(self, names):
         # check if it's TSP
         is_tsp = False
@@ -415,11 +370,6 @@ class PyBatman(object):
 
         # special parameters for TSP since it's so different from the rest
         if is_tsp:
-            # default = options.set('muMean', 1)                    \
-            #                      .set('muVar', 0.01)              \
-            #                      .set('muVar_prop', 0.0002)       \
-            #                      .set('nuMVar', 0.0025)            \
-            #                      .set('nuMVarProp', 0.01)
             default = options.set('muMean', 1.5)                  \
                                  .set('muVar', 0.1)               \
                                  .set('muVar_prop', 0.01)         \
@@ -471,14 +421,13 @@ class PyBatman(object):
 
         # cleaning up ..
         shutil.rmtree(temp_dir)
-        if verbose:
+        if self.verbose:
             print 'Deleted', temp_dir
 
         return bm
 
     def baseline_correct(self, options):
 
-        print 'Doing baseline correction'
         ppm = self.spectra_data[:, 0]
         n_row, n_col = self.spectra_data.shape
 
@@ -534,9 +483,8 @@ class PyBatman(object):
                         plt.show()
                         assert np.array_equal(self.spectra_data[:, i], intensity)
 
-    def background_correct(self, options, make_plot=True):
+    def background_correct(self, options, make_plot=True, exclude=[]):
 
-        print 'Doing background correction'
         ppm = self.spectra_data[:, 0]
         background = self.mean_bg
         n_row, n_col = self.spectra_data.shape
@@ -578,6 +526,11 @@ class PyBatman(object):
                             plt.tight_layout()
                             plt.show()
 
+            if len(exclude)> 0:
+                for lower, upper in exclude:
+                    idx = (ppm > lower) & (ppm < upper)
+                    self.spectra_data[idx, i] = intensity[idx]
+
     def _select_metabolites(self, names):
         selected = []
         for name in names:
@@ -587,7 +540,7 @@ class PyBatman(object):
     def _create_batman_dirs(self, working_dir):
 
         # create the main working directory
-        self._mkdir_p(working_dir)
+        mkdir_p(working_dir)
         prefix = datetime.datetime.now().strftime("%G%m%d_%H%M%S_")
         temp_dir = tempfile.mkdtemp(prefix=prefix, dir=working_dir)
         batman_dir = os.path.join(temp_dir, 'runBATMAN')
@@ -595,8 +548,8 @@ class PyBatman(object):
         # create batman input and output dirs
         batman_input = os.path.join(batman_dir, 'BatmanInput')
         batman_output = os.path.join(batman_dir, 'BatmanOutput')
-        self._mkdir_p(batman_input)
-        self._mkdir_p(batman_output)
+        mkdir_p(batman_input)
+        mkdir_p(batman_output)
         if self.verbose:
             print 'Working directory =', working_dir
             print '- batman_input =', batman_input
@@ -723,6 +676,7 @@ class PyBatman(object):
 
             # find all the child directories
             sub_dirs = [os.path.join(input_dir, x) for x in os.listdir(input_dir)]
+
             for path in sub_dirs:
 
                 # check the pulse program if it exists
@@ -735,6 +689,15 @@ class PyBatman(object):
                             head = [next(f) for x in xrange(2)]
                             if pattern in head[1]:
                                 matching.append(path)
+
+        # special check for a Bruker folder contains multiple PROC that match the pattern
+        if len(input_dirs) == 1 and len(matching) > 1:
+            print 'WARNING: multiple matches'
+            for match in matching:
+                print '- %s' % match
+            print 'found for the pattern "%s" in %s' % (pattern, input_dirs[0])
+            print 'The first match %s is used' % (matching[0])
+            matching = [matching[0]]
 
         return matching
 
@@ -752,7 +715,7 @@ class PyBatman(object):
         for f in range(len(matching)):
             path = matching[f]
             out_dir = os.path.join(data_dir, 'pdata', str(f))
-            self._mkdir_p(out_dir)
+            mkdir_p(out_dir)
             if self.verbose:
                 print 'Copied spectra to', out_dir
             copy_tree(path, out_dir)
@@ -871,7 +834,9 @@ class PyBatmanOptions(object):
             self.params = params
 
         # load parameter descriptions
-        with open('params_desc.json') as f:
+        current_dirname = os.path.dirname(os.path.realpath(__file__))
+        desc_filename = os.path.join(current_dirname, 'params_desc.json')
+        with open(desc_filename) as f:
             data = json.load(f)
         self.params_desc = {}
         for key, value in data:

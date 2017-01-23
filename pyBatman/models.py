@@ -39,8 +39,11 @@ class Database(object):
         return self.metabolites[name]
 
     def get_names(self):
+        names = self.get_all_names()
+        return names
+
+    def get_all_names(self):
         names = self.metabolites.keys()
-        names.remove('TSP')
         return sorted(names)
 
     def __repr__(self):

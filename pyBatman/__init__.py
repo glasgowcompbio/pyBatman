@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 
 __title__ = 'pyBatman'
-__version__ = '0.0.1'
+__version__ = '1.0.0'
 
-from .pipeline import PyBatmanPipeline, PyBatman, PyBatmanOptions, PyBatmanOutput
+from .pipeline import PyBatmanPipeline, PyBatman, PyBatmanOptions, PyBatmanOutput, start_analysis
 from .models import Spectra, Database, Metabolite, Multiplet
+from .helper import load_config, sub_dir_path

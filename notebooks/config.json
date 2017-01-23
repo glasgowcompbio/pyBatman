@@ -1,0 +1,14 @@
+{
+    "background_dir": "/home/rstudio/NMR/background",
+    "spectra_dir": "/home/rstudio/NMR/spectra",
+    "pattern": "cpmg",
+    "working_dir": ".",
+    "database": "../databases/default_optimised_db_small.csv",
+    "output_dir": "/home/rstudio/NMR/results",
+    "tsp_concentration": 2320,
+    "n_burnin": 19000,
+    "n_sample": 1000,
+    "n_thin": 1,
+    "n_iter": 8,
+    "verbose": "False"
+}
