@@ -27,32 +27,45 @@ from IPython.display import display
 
 from .parallel_calls import par_run_bm
 from .models import Spectra, Database
-from .helper import mkdir_p, load_config, sub_dir_path
+from .helper import mkdir_p
+from .helper import load_config
+from .helper import get_db_path
+from .helper import sub_dir_path
+from .constants import WD, USER_CONFIG, DEFAULT_CONFIG, STANDARD, PATTERN
+from .constants import BACKGROUND_DIR, SPECTRA_DIR, TEMP_DIR, OUTPUT_DIR
 
-def start_analysis(config_filename):
+def start_analysis():
 
-    config = load_config(config_filename)
+    if os.path.isdir(WD): # if wd exists (has been mapped)
 
-    background_dir = config['background_dir']
-    pattern = config['pattern']
-    working_dir = config['working_dir']
-    db = config['database']
-    spectra_dir = config['spectra_dir']
-    n_burnin = config['n_burnin']
-    n_sample = config['n_sample']
-    n_iter = config['n_iter']
-    tsp_concentration = config['tsp_concentration']
-    output_dir = config['output_dir']
-    verbose = True if config['verbose'] == 'True' else False
+        config = load_config()
+        db = get_db_path()
 
-    input_spectra = sub_dir_path(spectra_dir)
-    input_backgrounds = sub_dir_path(background_dir)
+        n_burnin = config['n_burnin']
+        n_sample = config['n_sample']
+        n_iter = config['n_iter']
+        tsp_concentration = config['tsp_concentration']
+        verbose = True if config['verbose'] == 'True' else False
 
-    pipeline = PyBatmanPipeline(input_backgrounds, pattern, working_dir, db)
-    for sd in input_spectra:
-        df, fit_results = pipeline.predict_conc(sd, n_burnin, n_sample, n_iter,
-                                                tsp_concentration, verbose=verbose)
-        pipeline.save_results(sd, df, fit_results, output_dir)
+        spectra_found = os.path.isdir(SPECTRA_DIR)
+        background_found = os.path.isdir(BACKGROUND_DIR)
+        if spectra_found and background_found:
+            input_spectra = sub_dir_path(SPECTRA_DIR)
+            input_backgrounds = sub_dir_path(BACKGROUND_DIR)
+            mkdir_p(OUTPUT_DIR)
+            pipeline = PyBatmanPipeline(input_backgrounds, PATTERN, TEMP_DIR, db)
+            for sd in input_spectra:
+                df, fit_results = pipeline.predict_conc(sd, n_burnin, n_sample, n_iter,
+                                                        tsp_concentration, verbose=verbose)
+                pipeline.save_results(sd, df, fit_results, OUTPUT_DIR)
+        else:
+            if not spectra_found:
+                print 'The "spectra" directory is missing in %s' % WD
+            if not background_found:
+                print 'The "background" directory is missing in %s' % WD
+
+    else:
+        print 'The working directory %s does not exist' % wd
 
 class PyBatmanPipeline(object):
 
@@ -66,7 +79,7 @@ class PyBatmanPipeline(object):
         self.spiked_bm = {}
 
         for m in self.db.metabolites:
-            if m == 'TSP':
+            if m == STANDARD:
                 tsp_multiplet = self.db.metabolites[m].multiplets[0]
                 self.tsp_rel_intensity = tsp_multiplet.rel_intensity
                 self.tsp_range = tsp_multiplet.ppm_range
@@ -154,7 +167,7 @@ class PyBatmanPipeline(object):
             print 'Now fitting %s for %s' % (name, spectra_dir)
             print '================================================================='
             print
-            if name == 'TSP':
+            if name == STANDARD:
                 correct_background = False
             else:
                 correct_background = True
@@ -198,7 +211,7 @@ class PyBatmanPipeline(object):
     def get_results(self, multiplets, fit_results, tsp_concentration):
         betas = []
         for name in multiplets:
-            if name == 'TSP':
+            if name == STANDARD:
                 continue
             fit_names, fit_betas = self.get_betas(fit_results[name])
             b = fit_betas.flatten()
@@ -215,7 +228,7 @@ class PyBatmanPipeline(object):
 
         metabolite_names = multiplets
         metabolite_betas = betas
-        fit_names, fit_betas = self.get_betas(fit_results['TSP'])
+        fit_names, fit_betas = self.get_betas(fit_results[STANDARD])
         tsp_betas = fit_betas.flatten()
 
         beta_m = np.median(metabolite_betas, axis=0)
@@ -335,9 +348,9 @@ class PyBatman(object):
     def get_default_params(self, names):
         # check if it's TSP
         is_tsp = False
-        if 'TSP' in names:
+        if STANDARD in names:
             if len(names) > 1:
-                raise ValueError('Not recommended to fit TSP with other metabolites')
+                raise ValueError('Not recommended to fit %s with other metabolites', STANDARD)
             is_tsp = True
 
         # select only the metabolites we need
