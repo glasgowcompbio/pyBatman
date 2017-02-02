@@ -43,21 +43,17 @@ def get_file_id(csv_filename):
 def get_df(csv_filename):
     df = pd.read_csv(csv_filename, header=0, index_col=0)
     file_id = get_file_id(csv_filename)
-    df.rename(columns={'Concentration (μM)': file_id}, inplace=True)
+    df.rename(columns={'Concentration (mM)': file_id}, inplace=True)
     return df
 
 def process_output(csv_files):
     dfs = []
     for csv_filename in csv_files:
-        # do not process 'results.csv' created from previous analyses
-        basename = os.path.basename(os.path.normpath(csv_filename))
-        if basename == 'results.csv':
-            continue
-        else:
-            df = get_df(csv_filename)
-            dfs.append(df)
+        df = get_df(csv_filename)
+        dfs.append(df)
     combined_df = pd.concat(dfs, axis=1)
     combined_df = combined_df.transpose()
+    combined_df = combined_df.sort_index()
     combined_df.to_csv(os.path.join(OUTPUT_DIR, 'results.csv'))
 
 def main():
@@ -67,7 +63,8 @@ def main():
     process_spectra(nb_name_input)
 
     # combined all the individual results into a single csv file
-    csv_files = glob.glob(os.path.join(OUTPUT_DIR, '*.csv'))
+    csv_dir = os.path.join(OUTPUT_DIR, 'csv')
+    csv_files = glob.glob(os.path.join(csv_dir, '*.csv'))
     process_output(csv_files)
 
 if __name__ == "__main__": main()

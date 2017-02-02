@@ -28,44 +28,7 @@ from IPython.display import display
 from .parallel_calls import par_run_bm
 from .models import Spectra, Database
 from .helper import mkdir_p
-from .helper import load_config
-from .helper import get_db_path
-from .helper import sub_dir_path
-from .constants import WD, USER_CONFIG, DEFAULT_CONFIG, STANDARD, PATTERN
-from .constants import BACKGROUND_DIR, SPECTRA_DIR, TEMP_DIR, OUTPUT_DIR
-
-def start_analysis():
-
-    if os.path.isdir(WD): # if wd exists (has been mapped)
-
-        config = load_config()
-        db = get_db_path()
-
-        n_burnin = config['n_burnin']
-        n_sample = config['n_sample']
-        n_iter = config['n_iter']
-        tsp_concentration = config['tsp_concentration']
-        verbose = True if config['verbose'] == 'True' else False
-
-        spectra_found = os.path.isdir(SPECTRA_DIR)
-        background_found = os.path.isdir(BACKGROUND_DIR)
-        if spectra_found and background_found:
-            input_spectra = sub_dir_path(SPECTRA_DIR)
-            input_backgrounds = sub_dir_path(BACKGROUND_DIR)
-            mkdir_p(OUTPUT_DIR)
-            pipeline = PyBatmanPipeline(input_backgrounds, PATTERN, TEMP_DIR, db)
-            for sd in input_spectra:
-                df, fit_results = pipeline.predict_conc(sd, n_burnin, n_sample, n_iter,
-                                                        tsp_concentration, verbose=verbose)
-                pipeline.save_results(sd, df, fit_results, OUTPUT_DIR)
-        else:
-            if not spectra_found:
-                print 'The "spectra" directory is missing in %s' % WD
-            if not background_found:
-                print 'The "background" directory is missing in %s' % WD
-
-    else:
-        print 'The working directory %s does not exist' % wd
+from .constants import STANDARD
 
 class PyBatmanPipeline(object):
 
@@ -186,8 +149,12 @@ class PyBatmanPipeline(object):
     def save_results(self, sd, df, fit_results, output_dir):
         base_name = os.path.basename(os.path.normpath(sd))
         # timestr = time.strftime("%Y%m%d_%H%M%S")
-        output_csv = os.path.join(output_dir, '%s.csv' % base_name)
-        output_model = os.path.join(output_dir, '%s.p' % base_name)
+        csv_dir = os.path.join(output_dir, 'csv')
+        model_dir = os.path.join(output_dir, 'model')
+        mkdir_p(csv_dir)
+        mkdir_p(model_dir)
+        output_csv = os.path.join(csv_dir, '%s.csv' % base_name)
+        output_model = os.path.join(model_dir, '%s.p' % base_name)
 
         # save the dataframe to csv and also the model as pickled objects
         display(df)
@@ -209,33 +176,34 @@ class PyBatmanPipeline(object):
         return names, np.array(all_betas)
 
     def get_results(self, multiplets, fit_results, tsp_concentration):
-        betas = []
+        metabolite_betas = []
+        metabolite_names = []
         for name in multiplets:
             if name == STANDARD:
                 continue
             fit_names, fit_betas = self.get_betas(fit_results[name])
             b = fit_betas.flatten()
-            betas.append(b)
+            metabolite_betas.append(b)
+            metabolite_names.append(name)
 
-        betas = np.array(betas)
-        betas = betas.transpose()
+        metabolite_betas = np.array(metabolite_betas)
+        metabolite_betas = metabolite_betas.transpose()
 
-        plt.boxplot(betas)
-        ticks = np.arange(len(multiplets)) + 1
-        plt.xticks(ticks, multiplets, rotation='vertical')
+        plt.boxplot(metabolite_betas)
+        ticks = np.arange(len(metabolite_names)) + 1
+        plt.xticks(ticks, metabolite_names, rotation='vertical')
         plt.title('Betas')
         plt.show()
 
-        metabolite_names = multiplets
-        metabolite_betas = betas
         fit_names, fit_betas = self.get_betas(fit_results[STANDARD])
         tsp_betas = fit_betas.flatten()
 
         beta_m = np.median(metabolite_betas, axis=0)
         beta_tsp = np.median(tsp_betas, axis=0)
         predicted = beta_m / beta_tsp * tsp_concentration
+        predicted = predicted / 1000 # convert to mM
         rows = zip(metabolite_names, predicted)
-        df = pd.DataFrame(rows, columns=['Metabolite', 'Concentration (μM)'])
+        df = pd.DataFrame(rows, columns=['Metabolite', 'Concentration (mM)'])
         return df
 
     def _get_corrected_intensity(self, spectra_data, integrate_range, tsp_conc, metabo_conc, tsp_protons):
@@ -713,15 +681,6 @@ class PyBatman(object):
             matching = [matching[0]]
 
         return matching
-
-    def _mkdir_p(self, path):
-        try:
-            os.makedirs(path)
-        except OSError as exc:  # Python >2.5
-            if exc.errno == errno.EEXIST and os.path.isdir(path):
-                pass
-            else:
-                raise
 
     def _prepare_data(self, matching, data_dir):
         out_dirs = []
