@@ -21,6 +21,7 @@ def process_spectra(nb_name_input):
         background_found = os.path.isdir(BACKGROUND_DIR)
         if spectra_found and background_found:
             input_spectra = sub_dir_path(SPECTRA_DIR)
+            input_spectra = natural_sort(input_spectra)
             mkdir_p(OUTPUT_DIR)
 
             for i in range(len(input_spectra)):
