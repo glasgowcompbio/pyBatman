@@ -3,6 +3,7 @@
 import os
 import sys
 import glob
+import re
 
 import pandas as pd
 
@@ -30,14 +31,20 @@ def process_spectra(nb_name_input):
                 nb_name_output = os.path.join(OUTPUT_DIR, '%s.html' % base_name)
                 timeout = -1 # never times out
                 nb_kwargs = {'spectra_dir': sd}
-                run_notebook(nb_name_input, nb_name_output, timeout=timeout, nb_kwargs=nb_kwargs)
+                try:
+                    run_notebook(nb_name_input, nb_name_output, timeout=timeout, nb_kwargs=nb_kwargs)
+                except nbconvert.preprocessors.execute.CellExecutionError, e:
+                    print 'Failed to process this spectra: %s' % str(e)
 
 def get_file_id(csv_filename):
     basename = os.path.basename(os.path.normpath(csv_filename))
     filename_no_extension = os.path.splitext(basename)[0]
     tokens = filename_no_extension.split('.')
-    file_id = tokens[1]
-    file_id = file_id.replace('ID_', '')
+    try: # Only for curve studies, extract e.g. 2001 from 'Curve_study.ID_2001.fP-EDTA.130510'
+        file_id = tokens[1]
+        file_id = file_id.replace('ID_', '')
+    except IndexError:
+        file_id = tokens[0]
     return file_id
 
 def get_df(csv_filename):
@@ -46,8 +53,14 @@ def get_df(csv_filename):
     df.rename(columns={'Concentration (mM)': file_id}, inplace=True)
     return df
 
+def natural_sort(l):
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ]
+    return sorted(l, key = alphanum_key)
+
 def process_output(csv_files):
     dfs = []
+    csv_files = natural_sort(csv_files)
     for csv_filename in csv_files:
         df = get_df(csv_filename)
         dfs.append(df)
