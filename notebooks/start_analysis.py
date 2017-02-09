@@ -4,6 +4,7 @@ import os
 import sys
 import glob
 import re
+import nbconvert
 
 import pandas as pd
 
