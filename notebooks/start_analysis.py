@@ -10,7 +10,7 @@ import pandas as pd
 
 sys.path.append('/home/rstudio/codes')
 from pyBatman.nbrun import run_notebook
-from pyBatman import load_config, get_db_path, sub_dir_path, mkdir_p
+from pyBatman import sub_dir_path, mkdir_p
 from pyBatman.constants import WD, SPECTRA_DIR, BACKGROUND_DIR, OUTPUT_DIR
 
 def process_spectra(nb_name_input):
