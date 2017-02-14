@@ -99,7 +99,7 @@ class PyBatmanPipeline(object):
         return copy_db
 
     def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
-                              verbose=False, n_plots=3, correct_background=True):
+                              verbose=False, n_plots=3, correct_spectra=True):
 
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
             self.working_dir, self.db, verbose=verbose)
@@ -109,8 +109,9 @@ class PyBatmanPipeline(object):
         default = bm.get_default_params(metabolites)
         options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
 
-        if correct_background:
+        if correct_spectra:
             bm.background_correct(default, make_plot=self.make_plot)
+            bm.baseline_correct(default)
 
         print 'Fitting %s' % metabolite_name
         meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
@@ -131,11 +132,11 @@ class PyBatmanPipeline(object):
             print '================================================================='
             print
             if name == STANDARD:
-                correct_background = False
+                correct_spectra = False
             else:
-                correct_background = True
+                correct_spectra = True
             fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample, n_iter,
-                                                           correct_background=correct_background)
+                                                           correct_spectra=correct_spectra)
 
         # predict the concentrations of metabolites
         print
