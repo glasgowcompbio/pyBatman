@@ -3,12 +3,10 @@
 
 import os
 import datetime
-import errno
 import tempfile
 import shutil
 import copy
 import cPickle
-import gzip
 from collections import OrderedDict
 from distutils.dir_util import copy_tree
 from random import randint
@@ -22,7 +20,6 @@ import scipy.interpolate as interpolate
 
 import matplotlib.pyplot as plt
 import pylab as plt
-import seaborn
 from IPython.display import display
 
 from .parallel_calls import par_run_bm
@@ -162,9 +159,15 @@ class PyBatmanPipeline(object):
         print 'Saving CSV output to %s' % output_csv
         df.to_csv(output_csv, index=False)
 
-        with gzip.GzipFile(output_model, 'wb') as f:
-            print 'Saving model to %s' % output_model
-            cPickle.dump(fit_results, f, protocol=cPickle.HIGHEST_PROTOCOL)
+        with open(output_model, 'wb') as f:
+            print 'Saving betas to %s' % output_model
+            betas = {}
+            multiplets = self.db.get_names()
+            for name in multiplets:
+                fit_names, fit_betas = self.get_betas(fit_results[name])
+                b = fit_betas.flatten()
+                betas[name] = b
+            cPickle.dump(betas, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
     def get_betas(self, bm_out_list):
         all_betas = []
