@@ -99,7 +99,7 @@ class PyBatmanPipeline(object):
         return copy_db
 
     def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
-                              verbose=False, n_plots=3, correct_spectra=True):
+                              verbose=False, n_plots=10, correct_spectra=True):
 
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
             self.working_dir, self.db, verbose=verbose)
@@ -180,8 +180,6 @@ class PyBatmanPipeline(object):
         metabolite_betas = []
         metabolite_names = []
         for name in multiplets:
-            if name == STANDARD:
-                continue
             fit_names, fit_betas = self.get_betas(fit_results[name])
             b = fit_betas.flatten()
             metabolite_betas.append(b)
