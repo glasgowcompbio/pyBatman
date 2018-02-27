@@ -475,8 +475,12 @@ class PyBatman(object):
         for i in range(1, n_col):
 
             intensity = np.copy(self.spectra_data[:, i])
+            if background is None:
+                self.spectra_data[:, i] = intensity
+                continue
+
             corrected_intensity = intensity - background
-            self.spectra_data[:, i] = corrected_intensity
+            self.spectra_data[:, i] = corrected_intensity            
 
             selected = options.selected
             label = self.labels[i-1]
