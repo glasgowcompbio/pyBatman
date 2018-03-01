@@ -95,7 +95,7 @@ class PyBatmanPipeline(object):
 
         return copy_db
 
-    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
+    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, scale_fac,
                               verbose=False, n_plots=10, correct_spectra=True):
 
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
@@ -104,18 +104,18 @@ class PyBatmanPipeline(object):
         # get default parameters
         metabolites = [metabolite_name]
         default = bm.get_default_params(metabolites)
-        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample)
+        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample).set('scaleFac', scale_fac)
 
-        if correct_spectra:
-            bm.background_correct(default, make_plot=self.make_plot)
-            bm.baseline_correct(default)
+        # do background and baseline corrections
+        bm.background_correct(default, make_plot=self.make_plot)
+        bm.baseline_correct(default)
 
         print 'Fitting %s' % metabolite_name
         meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
         # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
         return meta_fits
 
-    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter, tsp_concentration, verbose=False):
+    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter, tsp_concentration, scale_fac, verbose=False):
 
         multiplets = self.db.get_names()
         if verbose:
@@ -128,12 +128,7 @@ class PyBatmanPipeline(object):
             print 'Now fitting %s for %s' % (name, spectra_dir)
             print '================================================================='
             print
-            if name == STANDARD:
-                correct_spectra = False
-            else:
-                correct_spectra = True
-            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample, n_iter,
-                                                           correct_spectra=correct_spectra)
+            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample, n_iter, scale_fac)
 
         # predict the concentrations of metabolites
         print
@@ -346,25 +341,25 @@ class PyBatman(object):
                              .set('nItBurnin', 19000)             \
                              .set('nItPostBurnin', 1000)          \
                              .set('thinning', 5)                  \
+                             .set('scaleFac', 20000)              \
                              .set('tauMean', -0.01)               \
                              .set('tauPrec', 2)                   \
-                             .set('rdelta', 0.005)                \
+                             .set('rdelta', 0.030)                \
                              .set('csFlag', 0)
 
         # special parameters for TSP since it's so different from the rest
-        if is_tsp:
-            default = options.set('muMean', 1.5)                  \
-                                 .set('muVar', 0.1)               \
-                                 .set('muVar_prop', 0.01)         \
-                                 .set('nuMVar', 0)                \
-                                 .set('nuMVarProp', 0.1)
-        else:
-            default = options.set('muMean', 0)                     \
-                                 .set('muVar', 0.01)               \
-                                 .set('muVar_prop', 0.0002)        \
-                                 .set('nuMVar', 0.0025)            \
-                                 .set('nuMVarProp', 0.01)
-
+        # if is_tsp:
+            # default = options.set('muMean', 1.5)                  \
+            #                      .set('muVar', 0.1)               \
+            #                      .set('muVar_prop', 0.01)         \
+            #                      .set('nuMVar', 0)                \
+            #                      .set('nuMVarProp', 0.1)
+        # else:
+        default = options.set('muMean', 0)                     \
+                             .set('muVar', 0.1)                \
+                             .set('muVar_prop', 0.002)         \
+                             .set('nuMVar', 0.0025)            \
+                             .set('nuMVarProp', 0.0001)
 
         return default
 
@@ -480,7 +475,7 @@ class PyBatman(object):
                 continue
 
             corrected_intensity = intensity - background
-            self.spectra_data[:, i] = corrected_intensity            
+            self.spectra_data[:, i] = corrected_intensity
 
             selected = options.selected
             label = self.labels[i-1]
@@ -701,11 +696,21 @@ class PyBatman(object):
         return out_dirs
 
     def _load_single_spectra(self, spectra_dir):
+
         p_data = os.path.join(spectra_dir, 'pdata/1')
+
+        # get the proc file set by user that contains the scaling parameters
+        # https://www.researchgate.net/post/Difference_in_Bruker_proc_and_procs_files
+        procs_files = []
+        for f in ["procs", "proc2s", "proc3s", "proc4s", "proc"]:
+            if os.path.isfile(os.path.join(p_data, f)):
+                procs_files.append(f)
+
         if self.verbose:
             print 'Processing', p_data
+            print 'Procs files', procs_files
 
-        dic, data = ng.bruker.read_pdata(p_data)
+        dic, data = ng.bruker.read_pdata(p_data, procs_files=procs_files)
         udic = ng.bruker.guess_udic(dic, data)
         uc = ng.fileiobase.uc_from_udic(udic, 0)
 
@@ -784,8 +789,8 @@ class PyBatmanOptions(object):
             self.params['specNo']        = None         # set inside PyBatman.get_default_params(), e.g. '1-4'
             self.params['paraProc']      = None         # set inside PyBatman.get_default_params(), e.g. 4
             self.params['negThresh']     = -0.5         # probably don't change
-            self.params['scaleFac']      = 900000       # probably don't change
-            self.params['downSamp']      = 1            # probably don't change
+            self.params['scaleFac']      = None         # probably don't change
+            self.params['downSamp']      = 3            # probably don't change
             self.params['hiresFlag']     = 1            # probably don't change
             self.params['randSeed']      = None         # set inside PyBatman.get_default_params(), e.g. 25
             self.params['nItBurnin']     = None         # set inside PyBatman.get_default_params(), e.g. 9000
