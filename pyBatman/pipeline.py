@@ -95,8 +95,9 @@ class PyBatmanPipeline(object):
 
         return copy_db
 
-    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter, scale_fac,
-                              verbose=False, n_plots=10, correct_spectra=True):
+    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
+                              scale_fac, correct_spectra,
+                              verbose=False, n_plots=10):
 
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
             self.working_dir, self.db, verbose=verbose)
@@ -107,15 +108,18 @@ class PyBatmanPipeline(object):
         options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample).set('scaleFac', scale_fac)
 
         # do background and baseline corrections
-        bm.background_correct(default, make_plot=self.make_plot)
-        bm.baseline_correct(default)
+        if correct_spectra:
+            bm.background_correct(default, make_plot=self.make_plot)
+            bm.baseline_correct(default)
 
         print 'Fitting %s' % metabolite_name
         meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
         # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
         return meta_fits
 
-    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter, tsp_concentration, scale_fac, verbose=False):
+    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter,
+                     tsp_concentration, scale_fac, correct_spectra,
+                     verbose=False):
 
         multiplets = self.db.get_names()
         if verbose:
@@ -128,7 +132,8 @@ class PyBatmanPipeline(object):
             print 'Now fitting %s for %s' % (name, spectra_dir)
             print '================================================================='
             print
-            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample, n_iter, scale_fac)
+            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample,
+                                                           n_iter, scale_fac, correct_spectra)
 
         # predict the concentrations of metabolites
         print
