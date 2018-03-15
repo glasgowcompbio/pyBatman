@@ -12,14 +12,18 @@ class Database(object):
 
         self.metabolites = {}
 
-        self.df = pd.read_csv(from_file)
+        df = pd.read_csv(from_file)
+        count = len([x for x in df['standard'].values.tolist() if x == 'Y'])
+        assert count == 1, "Only one compound can be used as the internal standard"
+
+        self.df = df
         for idx, row in self.df.iterrows():
 
             if row['enabled'] == 'Y':
 
                 try:
 
-                    m = Metabolite(row['name'])
+                    m = Metabolite(row['name'], standard=row['standard'])
                     ppm = float(row['ppm'])
                     start = float(row['start'])
                     end = float(row['end'])
@@ -54,9 +58,10 @@ class Database(object):
 
 class Metabolite(object):
 
-    def __init__(self, name):
+    def __init__(self, name, standard=False):
         self.name = name
         self.multiplets = []
+        self.standard = standard
 
     def ppm_range(self):
         return [u.ppm_range for u in self.multiplets]

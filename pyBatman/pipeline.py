@@ -25,7 +25,6 @@ from IPython.display import display
 from .parallel_calls import par_run_bm
 from .models import Spectra, Database
 from .helper import mkdir_p
-from .constants import STANDARD
 
 class PyBatmanPipeline(object):
 
@@ -39,10 +38,14 @@ class PyBatmanPipeline(object):
         self.spiked_bm = {}
 
         for m in self.db.metabolites:
-            if m == STANDARD:
-                tsp_multiplet = self.db.metabolites[m].multiplets[0]
-                self.tsp_rel_intensity = tsp_multiplet.rel_intensity
-                self.tsp_range = tsp_multiplet.ppm_range
+            metabolite = self.db.metabolites[m]
+            if metabolite.standard:
+                self.std_metabolite = metabolite.name
+
+                # for human serum stuff
+                std_multiplet = metabolite.multiplets[0]
+                self.std_rel_intensity = std_multiplet.rel_intensity
+                self.std_range = std_multiplet.ppm_range
 
     def load_spiked(self, metabolite_name, concentration, spectra_dir, verbose=False):
 
@@ -57,13 +60,13 @@ class PyBatmanPipeline(object):
         default = bm.get_default_params(metabolites)
 
         # perform background correction using default parameters
-        exclude_regions = [self.tsp_range]
+        exclude_regions = [self.std_range]
         bm.background_correct(default, make_plot=self.make_plot, exclude=exclude_regions)
 
         # perform baseline correction using default parameters
         # bm.baseline_correct(default)
 
-    def update_rel_intensities(self, db, metabolite_name, concentrations, tsp_concentration):
+    def update_rel_intensities(self, db, metabolite_name, concentrations, std_concentration):
 
         print 'Updating relative intensities for %s' % metabolite_name
 
@@ -79,9 +82,9 @@ class PyBatmanPipeline(object):
                 bm = self.spiked_bm[key]
                 spectra_data = bm.spectra_data
 
-                # compute the corrected intensities from peak area ratio to TSP
+                # compute the corrected intensities from peak area ratio to std
                 corrected = self._get_corrected_intensity(spectra_data, u.ppm_range,
-                    tsp_concentration, concentration, self.tsp_rel_intensity)
+                    std_concentration, concentration, self.std_rel_intensity)
                 rel_intensities.append(corrected)
 
             corrected = np.median(rel_intensities)
@@ -117,9 +120,15 @@ class PyBatmanPipeline(object):
         # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
         return meta_fits
 
-    def predict_conc(self, spectra_dir, n_burnin, n_sample, n_iter,
-                     tsp_concentration, scale_fac, correct_spectra,
-                     verbose=False):
+    def predict_conc(self, spectra_dir, config):
+
+        n_burnin = config['n_burnin']
+        n_sample = config['n_sample']
+        n_iter = config['n_iter']
+        std_concentration = config['std_concentration']
+        scale_fac = config['scale_fac']
+        correct_spectra = config['correct_spectra']
+        verbose = config['verbose']
 
         multiplets = self.db.get_names()
         if verbose:
@@ -133,7 +142,7 @@ class PyBatmanPipeline(object):
             print '================================================================='
             print
             fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample,
-                                                           n_iter, scale_fac, correct_spectra)
+                                                           n_iter, scale_fac, correct_spectra, verbose=verbose)
 
         # predict the concentrations of metabolites
         print
@@ -141,7 +150,7 @@ class PyBatmanPipeline(object):
         print 'Results'
         print '================================================================='
         print
-        df = self.get_results(multiplets, fit_results, tsp_concentration)
+        df = self.get_results(multiplets, fit_results, std_concentration, verbose=verbose)
         return df, fit_results
 
     def save_results(self, sd, df, fit_results, output_dir):
@@ -179,7 +188,10 @@ class PyBatmanPipeline(object):
             all_betas.append(betas)
         return names, np.array(all_betas)
 
-    def get_results(self, multiplets, fit_results, tsp_concentration):
+    def get_results(self, multiplets, fit_results, std_concentration, verbose=False):
+
+        ### plot the betas ###
+
         metabolite_betas = []
         metabolite_names = []
         for name in multiplets:
@@ -190,25 +202,36 @@ class PyBatmanPipeline(object):
 
         metabolite_betas = np.array(metabolite_betas)
         metabolite_betas = metabolite_betas.transpose()
+        if verbose:
+            print metabolite_betas, metabolite_betas.shape
 
-        plt.boxplot(metabolite_betas)
         ticks = np.arange(len(metabolite_names)) + 1
+        if metabolite_betas.shape[0] == 1:
+            # only 1 iteration of MCMC done
+            plt.plot(ticks, metabolite_betas.transpose(), marker='o', linestyle='None')
+        else:
+            # more than 1 MCMC iterations
+            plt.boxplot(metabolite_betas)
+
         plt.xticks(ticks, metabolite_names, rotation='vertical')
         plt.title('Betas')
         plt.show()
 
-        fit_names, fit_betas = self.get_betas(fit_results[STANDARD])
-        tsp_betas = fit_betas.flatten()
+        ### compute the concentration from betas ###
+
+        std_metabolite = self.std_metabolite
+        fit_names, fit_betas = self.get_betas(fit_results[std_metabolite])
+        std_betas = fit_betas.flatten()
 
         beta_m = np.median(metabolite_betas, axis=0)
-        beta_tsp = np.median(tsp_betas, axis=0)
-        predicted = beta_m / beta_tsp * tsp_concentration
+        beta_std = np.median(std_betas, axis=0)
+        predicted = beta_m / beta_std * std_concentration
         predicted = predicted / 1000 # convert to mM
         rows = zip(metabolite_names, predicted)
         df = pd.DataFrame(rows, columns=['Metabolite', 'Concentration (mM)'])
         return df
 
-    def _get_corrected_intensity(self, spectra_data, integrate_range, tsp_conc, metabo_conc, tsp_protons):
+    def _get_corrected_intensity(self, spectra_data, integrate_range, std_conc, metabo_conc, std_protons):
 
         ppm = spectra_data[:, 0]
         intensity = spectra_data[:, 1]
@@ -218,18 +241,18 @@ class PyBatmanPipeline(object):
         selected_intensity = intensity[idx]
         metabo_area = np.trapz(selected_intensity)
 
-        # integrate the TSP area
+        # integrate the std area
         lower = -0.05
         upper = 0.05
         idx = (ppm > lower) & (ppm < upper)
         selected_intensity = intensity[idx]
-        tsp_area = np.trapz(selected_intensity)
+        std_area = np.trapz(selected_intensity)
 
         metabo_conc = float(metabo_conc)
 
         # compute the corrected relative intensity
-        correction = tsp_protons * (metabo_area/tsp_area) * (tsp_conc/metabo_conc)
-        print 'tsp_area=%f, metabo_area=%f, correction=%f' % (tsp_area, metabo_area, correction)
+        correction = std_protons * (metabo_area/std_area) * (std_conc/metabo_conc)
+        print 'std_area=%f, metabo_area=%f, correction=%f' % (std_area, metabo_area, correction)
 
         return correction
 
@@ -316,12 +339,6 @@ class PyBatman(object):
             plt.show()
 
     def get_default_params(self, names):
-        # check if it's TSP
-        is_tsp = False
-        if STANDARD in names:
-            if len(names) > 1:
-                raise ValueError('Not recommended to fit %s with other metabolites', STANDARD)
-            is_tsp = True
 
         # select only the metabolites we need
         selected = self._select_metabolites(names)
@@ -350,23 +367,14 @@ class PyBatman(object):
                              .set('tauMean', -0.01)               \
                              .set('tauPrec', 2)                   \
                              .set('rdelta', 0.030)                \
-                             .set('csFlag', 0)
-
-        # special parameters for TSP since it's so different from the rest
-        # if is_tsp:
-            # default = options.set('muMean', 1.5)                  \
-            #                      .set('muVar', 0.1)               \
-            #                      .set('muVar_prop', 0.01)         \
-            #                      .set('nuMVar', 0)                \
-            #                      .set('nuMVarProp', 0.1)
-        # else:
-        default = options.set('muMean', 0)                     \
-                             .set('muVar', 0.1)                \
-                             .set('muVar_prop', 0.002)         \
-                             .set('nuMVar', 0.0025)            \
+                             .set('csFlag', 0)                    \
+                             .set('muMean', 0)                    \
+                             .set('muVar', 0.1)                   \
+                             .set('muVar_prop', 0.002)            \
+                             .set('nuMVar', 0.0025)               \
                              .set('nuMVarProp', 0.0001)
 
-        return default
+        return options
 
     def run(self, options, plot=True):
 
