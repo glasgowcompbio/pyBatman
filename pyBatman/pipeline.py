@@ -24,7 +24,8 @@ from IPython.display import display
 
 from .parallel_calls import par_run_bm
 from .models import Spectra, Database
-from .helper import mkdir_p
+from .helper import mkdir_p, merge_intervals
+
 
 class PyBatmanPipeline(object):
 
@@ -52,7 +53,7 @@ class PyBatmanPipeline(object):
         print 'Loading spectra for %s (%d)' % (metabolite_name, concentration)
         key = (metabolite_name, concentration)
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
-            self.working_dir, self.db, verbose=verbose)
+                      self.working_dir, self.db, verbose=verbose)
         self.spiked_bm[key] = bm
 
         # get default parameters
@@ -75,7 +76,7 @@ class PyBatmanPipeline(object):
         for u in m.multiplets:
 
             rel_intensities = []
-            for concentration in concentrations: # for all std concentrations
+            for concentration in concentrations:  # for all std concentrations
 
                 # get the spectral data
                 key = (metabolite_name, concentration)
@@ -84,7 +85,7 @@ class PyBatmanPipeline(object):
 
                 # compute the corrected intensities from peak area ratio to std
                 corrected = self._get_corrected_intensity(spectra_data, u.ppm_range,
-                    std_concentration, concentration, self.std_rel_intensity)
+                                                          std_concentration, concentration, self.std_rel_intensity)
                 rel_intensities.append(corrected)
 
             corrected = np.median(rel_intensities)
@@ -100,15 +101,16 @@ class PyBatmanPipeline(object):
 
     def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
                               scale_fac, correct_spectra,
-                              verbose=False, n_plots=10):
+                              verbose=False):
 
         bm = PyBatman([spectra_dir], self.background_dir, self.pattern,
-            self.working_dir, self.db, verbose=verbose)
+                      self.working_dir, self.db, verbose=verbose)
 
         # get default parameters
         metabolites = [metabolite_name]
         default = bm.get_default_params(metabolites)
-        options = default.set('nItBurnin', n_burnin).set('nItPostBurnin', n_sample).set('scaleFac', scale_fac)
+        options = default.set('nItBurnin', n_burnin).set(
+            'nItPostBurnin', n_sample).set('scaleFac', scale_fac)
 
         # do background and baseline corrections
         if correct_spectra:
@@ -116,7 +118,7 @@ class PyBatmanPipeline(object):
             bm.baseline_correct(default)
 
         print 'Fitting %s' % metabolite_name
-        meta_fits = self._iterate(bm, options, n_iter, n_plots=n_plots)
+        meta_fits = self._iterate(bm, options, n_iter)
         # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
         return meta_fits
 
@@ -129,13 +131,14 @@ class PyBatmanPipeline(object):
         scale_fac = config['scale_fac']
         correct_spectra = config['correct_spectra']
         verbose = config['verbose']
+        n_plots = 10
 
-        multiplets = self.db.get_names()
+        metabolites = self.db.get_names()
         if verbose:
-            print multiplets
+            print metabolites
 
         fit_results = {}
-        for name in multiplets:
+        for name in metabolites:
             print
             print '================================================================='
             print 'Now fitting %s for %s' % (name, spectra_dir)
@@ -143,6 +146,10 @@ class PyBatmanPipeline(object):
             print
             fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample,
                                                            n_iter, scale_fac, correct_spectra, verbose=verbose)
+            for i in range(len(fit_results[name])):
+                bmo = fit_results[name][i]
+                if self.make_plot and i < n_plots:
+                    bmo.plot_fit()
 
         # predict the concentrations of metabolites
         print
@@ -150,7 +157,8 @@ class PyBatmanPipeline(object):
         print 'Results'
         print '================================================================='
         print
-        df = self.get_results(multiplets, fit_results, std_concentration, verbose=verbose)
+        self.plot_betas(metabolites, fit_results, std_concentration, verbose=verbose)
+        df = self.get_concentrations(metabolites, fit_results, std_concentration, verbose=verbose)
         return df, fit_results
 
     def save_results(self, sd, df, fit_results, output_dir):
@@ -183,14 +191,12 @@ class PyBatmanPipeline(object):
         for bm_out in bm_out_list:
             df = bm_out.beta_df
             names = df.index.values
-            first_col = df.ix[:,0]
+            first_col = df.ix[:, 0]
             betas = first_col.values
             all_betas.append(betas)
         return names, np.array(all_betas)
 
-    def get_results(self, multiplets, fit_results, std_concentration, verbose=False):
-
-        ### plot the betas ###
+    def plot_betas(self, multiplets, fit_results, std_concentration, verbose=False):
 
         metabolite_betas = []
         metabolite_names = []
@@ -217,7 +223,20 @@ class PyBatmanPipeline(object):
         plt.title('Betas')
         plt.show()
 
-        ### compute the concentration from betas ###
+    def get_concentrations(self, multiplets, fit_results, std_concentration, verbose=False):
+
+        metabolite_betas = []
+        metabolite_names = []
+        for name in multiplets:
+            fit_names, fit_betas = self.get_betas(fit_results[name])
+            b = fit_betas.flatten()
+            metabolite_betas.append(b)
+            metabolite_names.append(name)
+
+        metabolite_betas = np.array(metabolite_betas)
+        metabolite_betas = metabolite_betas.transpose()
+        if verbose:
+            print metabolite_betas, metabolite_betas.shape
 
         std_metabolite = self.std_metabolite
         fit_names, fit_betas = self.get_betas(fit_results[std_metabolite])
@@ -226,7 +245,7 @@ class PyBatmanPipeline(object):
         beta_m = np.median(metabolite_betas, axis=0)
         beta_std = np.median(std_betas, axis=0)
         predicted = beta_m / beta_std * std_concentration
-        predicted = predicted / 1000 # convert to mM
+        predicted = predicted / 1000  # convert to mM
         rows = zip(metabolite_names, predicted)
         df = pd.DataFrame(rows, columns=['Metabolite', 'Concentration (mM)'])
         return df
@@ -251,14 +270,14 @@ class PyBatmanPipeline(object):
         metabo_conc = float(metabo_conc)
 
         # compute the corrected relative intensity
-        correction = std_protons * (metabo_area/std_area) * (std_conc/metabo_conc)
+        correction = std_protons * (metabo_area / std_area) * (std_conc / metabo_conc)
         print 'std_area=%f, metabo_area=%f, correction=%f' % (std_area, metabo_area, correction)
 
         return correction
 
-    def _iterate(self, bm, options, n_iter, n_plots=3):
+    def _iterate(self, bm, options, n_iter):
 
-        if n_iter > 1: # map each mcmc chain to a parallel worker in the pool
+        if n_iter > 1:  # map each mcmc chain to a parallel worker in the pool
 
             # prepare the parameters for each chain
             params = []
@@ -275,7 +294,7 @@ class PyBatmanPipeline(object):
                 pool.close()
                 pool.join()
 
-        else: # just a single chain
+        else:  # just a single chain
             print 'START MCMC iteration %d' % 0
             bm_r = bm.run(options)
             print 'FINISH MCMC iteration %d' % 0
@@ -287,10 +306,8 @@ class PyBatmanPipeline(object):
         for i in range(n_iter):
             bmo = PyBatmanOutput(iter_results[i], options)
             bm_outputs.append(bmo)
-            if self.make_plot and i < n_plots:
-                bmo.plot_fit()
-
         return bm_outputs
+
 
 class PyBatman(object):
 
@@ -348,8 +365,9 @@ class PyBatman(object):
         ranges = []
         for m in selected:
             if m.ppm_range() > 0:
-                ranges.extend(m.ppm_range()) # a list of tuples
-        ranges = ['(%s, %s)' % r for r in ranges] # convert to a list of string
+                ranges.extend(m.ppm_range())  # a list of tuples
+        ranges = merge_intervals(ranges)  # merge overlapping intervals
+        ranges = ['(%s, %s)' % r for r in ranges]  # convert to a list of string
         ranges_str = ' '.join(ranges)
 
         # set no. of spectra and no. of processors to use
@@ -358,21 +376,21 @@ class PyBatman(object):
 
         # set common parameters
         options = options.set('ppmRange', ranges_str)             \
-                             .set('specNo', '1-%d' % spec_no)     \
-                             .set('paraProc', para_proc)          \
-                             .set('nItBurnin', 19000)             \
-                             .set('nItPostBurnin', 1000)          \
-                             .set('thinning', 5)                  \
-                             .set('scaleFac', 20000)              \
-                             .set('tauMean', -0.01)               \
-                             .set('tauPrec', 2)                   \
-                             .set('rdelta', 0.030)                \
-                             .set('csFlag', 0)                    \
-                             .set('muMean', 0)                    \
-                             .set('muVar', 0.1)                   \
-                             .set('muVar_prop', 0.002)            \
-                             .set('nuMVar', 0.0025)               \
-                             .set('nuMVarProp', 0.0001)
+            .set('specNo', '1-%d' % spec_no)     \
+            .set('paraProc', para_proc)          \
+            .set('nItBurnin', 19000)             \
+            .set('nItPostBurnin', 1000)          \
+            .set('thinning', 5)                  \
+            .set('scaleFac', 20000)              \
+            .set('tauMean', -0.01)               \
+            .set('tauPrec', 2)                   \
+            .set('rdelta', 0.030)                \
+            .set('csFlag', 0)                    \
+            .set('muMean', 0)                    \
+            .set('muVar', 0.1)                   \
+            .set('muVar_prop', 0.002)            \
+            .set('nuMVar', 0.0025)               \
+            .set('nuMVarProp', 0.0001)
 
         return options
 
@@ -411,7 +429,7 @@ class PyBatman(object):
             sink_r()
 
         # cleaning up ..
-        shutil.rmtree(temp_dir)
+        # shutil.rmtree(temp_dir)
         if self.verbose:
             print 'Deleted', temp_dir
 
@@ -426,7 +444,7 @@ class PyBatman(object):
 
             intensity = self.spectra_data[:, i]
             selected = options.selected
-            label = self.labels[i-1]
+            label = self.labels[i - 1]
 
             for metabolite in selected:
                 ranges = metabolite.ppm_range()
@@ -444,12 +462,13 @@ class PyBatman(object):
 
                         # node_list will be the indices of ...
                         first = 0
-                        last = len(selected_intensity)-1
+                        last = len(selected_intensity) - 1
                         # node_list = [first, last]
                         node_list = [first]         # the first element
                         node_list.extend(min_pos)   # the min elements from left and right
                         node_list.append(last)      # the last element
-                        corrected_intensity = ng.proc_bl.base(selected_intensity, node_list) # piece-wise baseline correction
+                        corrected_intensity = ng.proc_bl.base(
+                            selected_intensity, node_list)  # piece-wise baseline correction
 
                         f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
                         title = '(%.4f-%.4f)' % (lower, upper)
@@ -462,8 +481,8 @@ class PyBatman(object):
                         ax1.set_title(title)
 
                         intensity[idx] = corrected_intensity
-                        idx = (ppm > lower-0.05) & (ppm < upper+0.05)
-                        title = 'Corrected (%.4f-%.4f)' % (lower-0.05, upper+0.05)
+                        idx = (ppm > lower - 0.05) & (ppm < upper + 0.05)
+                        title = 'Corrected (%.4f-%.4f)' % (lower - 0.05, upper + 0.05)
                         ax2.plot(ppm[idx], intensity[idx], 'b')
                         ax2.set_xlabel('ppm')
                         ax2.invert_xaxis()
@@ -491,7 +510,7 @@ class PyBatman(object):
             self.spectra_data[:, i] = corrected_intensity
 
             selected = options.selected
-            label = self.labels[i-1]
+            label = self.labels[i - 1]
 
             for metabolite in selected:
                 ranges = metabolite.ppm_range()
@@ -503,15 +522,16 @@ class PyBatman(object):
                             title = '(%.4f-%.4f)' % (lower, upper)
                             ax1.plot(ppm[idx], intensity[idx], 'b', label='Spectra')
                             ax1.plot(ppm[idx], background[idx], 'k--', label='Background')
-                            ax1.plot(ppm[idx], corrected_intensity[idx], 'g', label='Spectra - Background')
+                            ax1.plot(ppm[idx], corrected_intensity[idx],
+                                     'g', label='Spectra - Background')
                             ax1.set_xlabel('ppm')
                             ax1.set_ylabel('intensity')
                             ax1.legend(loc='best')
                             ax1.invert_xaxis()
                             ax1.set_title(title)
 
-                            idx = (ppm > lower-0.05) & (ppm < upper+0.05)
-                            title = 'Corrected (%.4f-%.4f)' % (lower-0.05, upper+0.05)
+                            idx = (ppm > lower - 0.05) & (ppm < upper + 0.05)
+                            title = 'Corrected (%.4f-%.4f)' % (lower - 0.05, upper + 0.05)
                             ax2.plot(ppm[idx], corrected_intensity[idx], 'b')
                             ax2.set_xlabel('ppm')
                             ax2.invert_xaxis()
@@ -521,7 +541,7 @@ class PyBatman(object):
                             plt.tight_layout()
                             plt.show()
 
-            if len(exclude)> 0:
+            if len(exclude) > 0:
                 for lower, upper in exclude:
                     idx = (ppm > lower) & (ppm < upper)
                     self.spectra_data[idx, i] = intensity[idx]
@@ -563,9 +583,12 @@ class PyBatman(object):
     def _write_parameters(self, options, batman_input, parallel=False, seed=None):
 
         selected = options.selected
-        metabolites_list_df = self._write_metabolites_list(selected, batman_input, 'metabolitesList.csv')
-        multi_data_user_df = self._write_multiplet_data(selected, batman_input, 'multi_data_user.csv')
-        chem_shift_per_spec_df = self._write_chem_shift(selected, batman_input, 'chemShiftPerSpec.csv')
+        metabolites_list_df = self._write_metabolites_list(
+            selected, batman_input, 'metabolitesList.csv')
+        multi_data_user_df = self._write_multiplet_data(
+            selected, batman_input, 'multi_data_user.csv')
+        chem_shift_per_spec_df = self._write_chem_shift(
+            selected, batman_input, 'chemShiftPerSpec.csv')
         if self.verbose:
             display(metabolites_list_df)
             display(multi_data_user_df)
@@ -614,7 +637,7 @@ class PyBatman(object):
         for m in metabolites:
             for u in m.multiplets:
                 row = (u.parent.name, u.ppm, u.couple_code, u.j_constant, u.rel_intensity,
-                        OVERWRITE_POS, OVERWRITE_TRUNCATION, INCLUDE_MULTIPLET)
+                       OVERWRITE_POS, OVERWRITE_TRUNCATION, INCLUDE_MULTIPLET)
                 data.append(row)
         df = pd.DataFrame(data, columns=columns)
 
@@ -677,7 +700,7 @@ class PyBatman(object):
                 # check the pulse program if it exists
                 if os.path.isdir(path):
                     pp = os.path.join(path, 'pulseprogram')
-                    if os.path.isfile(pp): # if exists
+                    if os.path.isfile(pp):  # if exists
 
                         # if it contains the pattern then store this path
                         with open(pp, 'r') as f:
@@ -787,44 +810,57 @@ class PyBatman(object):
 
         return combined, mean_bg
 
+
 class PyBatmanOptions(object):
 
     def __init__(self, selected, params=None):
 
         self.selected = selected
-        if params is None: # default parameters
+        if params is None:  # default parameters
 
             # These parameters will be written to the batmanOptions.txt file, so
             # DO NOT CHANGE THE ORDER OF PARAMETERS HERE!!
             # since the parser in batman seems to break easily
             self.params = OrderedDict()
-            self.params['ppmRange']      = None         # set inside PyBatman.get_default_params(), e.g. '(-0.05, 0.05)'
-            self.params['specNo']        = None         # set inside PyBatman.get_default_params(), e.g. '1-4'
-            self.params['paraProc']      = None         # set inside PyBatman.get_default_params(), e.g. 4
-            self.params['negThresh']     = -0.5         # probably don't change
-            self.params['scaleFac']      = None         # probably don't change
-            self.params['downSamp']      = 3            # probably don't change
-            self.params['hiresFlag']     = 1            # probably don't change
-            self.params['randSeed']      = None         # set inside PyBatman.get_default_params(), e.g. 25
-            self.params['nItBurnin']     = None         # set inside PyBatman.get_default_params(), e.g. 9000
-            self.params['nItPostBurnin'] = None         # set inside PyBatman.get_default_params(), e.g.
-            self.params['multFile']      = 2            # probably don't change
-            self.params['thinning']      = None         # set inside PyBatman.get_default_params(), e.g. 5
-            self.params['cfeFlag']       = 0            # probably don't change
-            self.params['nItRerun']      = 5000         # unused
-            self.params['startTemp']     = 1000         # probably don't change
-            self.params['specFreq']      = 600          # probably don't change
-            self.params['a']             = 0.00001      # probably don't change
-            self.params['b']             = 0.000000001  # probably don't change
-            self.params['muMean']        = None         # set inside PyBatman.get_default_params(), e.g. 0
-            self.params['muVar']         = None         # set inside PyBatman.get_default_params(), e.g. 0.1
-            self.params['muVar_prop']    = None         # set inside PyBatman.get_default_params(), e.g. 0.002
-            self.params['nuMVar']        = None         # set inside PyBatman.get_default_params(), e.g. 0.0025
-            self.params['nuMVarProp']    = None         # set inside PyBatman.get_default_params(), e.g. 0.1
-            self.params['tauMean']       = None         # set inside PyBatman.get_default_params(), e.g. -0.05
-            self.params['tauPrec']       = None         # set inside PyBatman.get_default_params(), e.g. 2
-            self.params['rdelta']        = None         # set inside PyBatman.get_default_params(), e.g. 0.002
-            self.params['csFlag']        = None         # set inside PyBatman.get_default_params(), e.g. 0
+            # set inside PyBatman.get_default_params(), e.g. '(-0.05, 0.05)'
+            self.params['ppmRange'] = None
+            # set inside PyBatman.get_default_params(), e.g. '1-4'
+            self.params['specNo'] = None
+            # set inside PyBatman.get_default_params(), e.g. 4
+            self.params['paraProc'] = None
+            self.params['negThresh'] = -0.5         # probably don't change
+            self.params['scaleFac'] = None         # probably don't change
+            self.params['downSamp'] = 3            # probably don't change
+            self.params['hiresFlag'] = 1            # probably don't change
+            # set inside PyBatman.get_default_params(), e.g. 25
+            self.params['randSeed'] = None
+            # set inside PyBatman.get_default_params(), e.g. 9000
+            self.params['nItBurnin'] = None
+            # set inside PyBatman.get_default_params(), e.g.
+            self.params['nItPostBurnin'] = None
+            self.params['multFile'] = 2            # probably don't change
+            # set inside PyBatman.get_default_params(), e.g. 5
+            self.params['thinning'] = None
+            self.params['cfeFlag'] = 0            # probably don't change
+            self.params['nItRerun'] = 5000         # unused
+            self.params['startTemp'] = 1000         # probably don't change
+            self.params['specFreq'] = 600          # probably don't change
+            self.params['a'] = 0.00001      # probably don't change
+            self.params['b'] = 0.000000001  # probably don't change
+            self.params['muMean'] = None         # set inside PyBatman.get_default_params(), e.g. 0
+            self.params['muVar'] = None         # set inside PyBatman.get_default_params(), e.g. 0.1
+            # set inside PyBatman.get_default_params(), e.g. 0.002
+            self.params['muVar_prop'] = None
+            # set inside PyBatman.get_default_params(), e.g. 0.0025
+            self.params['nuMVar'] = None
+            # set inside PyBatman.get_default_params(), e.g. 0.1
+            self.params['nuMVarProp'] = None
+            # set inside PyBatman.get_default_params(), e.g. -0.05
+            self.params['tauMean'] = None
+            self.params['tauPrec'] = None         # set inside PyBatman.get_default_params(), e.g. 2
+            # set inside PyBatman.get_default_params(), e.g. 0.002
+            self.params['rdelta'] = None
+            self.params['csFlag'] = None         # set inside PyBatman.get_default_params(), e.g. 0
 
         else:
             self.params = params
@@ -844,6 +880,7 @@ class PyBatmanOptions(object):
         copy[key] = val
         return PyBatmanOptions(self.selected, params=copy)
 
+
 class PyBatmanOutput(object):
 
     def __init__(self, bm, options):
@@ -857,7 +894,7 @@ class PyBatmanOutput(object):
         specfit = bm[bm.names.index('sFit')]
 
         from rpy2.robjects import pandas2ri
-        pandas2ri.activate() # to convert between R <-> pandas dataframes
+        pandas2ri.activate()  # to convert between R <-> pandas dataframes
 
         self.beta_df = pandas2ri.ri2py(beta)
         # self.beta_sam_df = pandas2ri.ri2py(beta_sam).transpose()
@@ -873,7 +910,13 @@ class PyBatmanOutput(object):
 
         for metabolite in self.options.selected:
 
-            for lower, upper in metabolite.ppm_range():
+            multiplet_ppms = metabolite.ppm()
+            multiplet_ppm_ranges = metabolite.ppm_range()
+            assert len(multiplet_ppms) == len(multiplet_ppm_ranges)
+            for i in range(len(multiplet_ppms)):
+
+                multiplet_pos = multiplet_ppms[i]
+                lower, upper = multiplet_ppm_ranges[i]
 
                 idx = (self.ppm > lower) & (self.ppm < upper)
                 ppm = self.ppm[idx]
@@ -888,7 +931,8 @@ class PyBatmanOutput(object):
                 # plt.plot(self.ppm, self.overall_fit, '--', color='black', label='Combined Fit')
                 plt.legend(loc='best')
                 plt.gca().invert_xaxis()
-                title = 'Fit Results -- %s (%.4f-%.4f)' % (metabolite.name, lower, upper)
+                title = 'Fit Results -- %s @ %.4f (%.4f-%.4f)' % (metabolite.name,
+                                                                  multiplet_pos, lower, upper)
                 plt.title('%s' % title)
                 plt.show()
 

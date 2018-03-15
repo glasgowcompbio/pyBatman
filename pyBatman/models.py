@@ -15,26 +15,32 @@ class Database(object):
         df = pd.read_csv(from_file)
         count = len([x for x in df['standard'].values.tolist() if x == 'Y'])
         assert count == 1, "Only one compound can be used as the internal standard"
-
         self.df = df
+
+        # get all the metabolites
         for idx, row in self.df.iterrows():
-
             if row['enabled'] == 'Y':
-
                 try:
-
                     m = Metabolite(row['name'], standard=row['standard'])
-                    ppm = float(row['ppm'])
-                    start = float(row['start'])
-                    end = float(row['end'])
-
-                    m.add(ppm=row['ppm'], ppm_range=(start, end), couple_code=row['couple_code'],
-                          j_constant=row['j_constant'], rel_intensity=row['rel_intensity'])
                     self.add(m)
-
                 except ValueError as e:
                     print 'Error parsing %s: %s' % (m.name, e)
                     continue
+
+        # get all the multiplets linked to a metabolite
+        for idx, row in self.df.iterrows():
+            if row['enabled'] == 'Y':
+                try:
+                    m = self.metabolites[row['name']]
+                    ppm = float(row['ppm'])
+                    start = float(row['start'])
+                    end = float(row['end'])
+                    m.add(ppm=row['ppm'], ppm_range=(start, end), couple_code=row['couple_code'],
+                          j_constant=row['j_constant'], rel_intensity=row['rel_intensity'])
+                except ValueError as e:
+                    print 'Error parsing %s: %s' % (m.name, e)
+                    continue
+
 
     def add(self, m):
         self.metabolites[m.name] = m
@@ -58,10 +64,14 @@ class Database(object):
 
 class Metabolite(object):
 
-    def __init__(self, name, standard=False):
+    def __init__(self, name, group=0, standard=False):
         self.name = name
         self.multiplets = []
         self.standard = standard
+        self.group = group
+
+    def ppm(self):
+        return [u.ppm for u in self.multiplets]
 
     def ppm_range(self):
         return [u.ppm_range for u in self.multiplets]
