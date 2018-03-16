@@ -1,4 +1,5 @@
 import pandas as pd
+from collections import defaultdict
 
 class Spectra(object):
 
@@ -11,6 +12,7 @@ class Database(object):
     def __init__(self, from_file=None):
 
         self.metabolites = {}
+        self.metabolites_groups = defaultdict(list)
 
         df = pd.read_csv(from_file)
         count = len([x for x in df['standard'].values.tolist() if x == 'Y'])
@@ -18,11 +20,16 @@ class Database(object):
         self.df = df
 
         # get all the metabolites
+        seen = list()
         for idx, row in self.df.iterrows():
             if row['enabled'] == 'Y':
                 try:
-                    m = Metabolite(row['name'], standard=row['standard'])
-                    self.add(m)
+                    name = row['name']
+                    standard = True if row['standard'].upper() == 'Y' else False
+                    m = Metabolite(name, group=row['group'], standard=standard)
+                    if name not in seen:
+                        seen.append(name)
+                        self.add(m)
                 except ValueError as e:
                     print 'Error parsing %s: %s' % (m.name, e)
                     continue
@@ -44,9 +51,16 @@ class Database(object):
 
     def add(self, m):
         self.metabolites[m.name] = m
+        self.metabolites_groups[m.group].append(m)
 
     def find(self, name):
         return self.metabolites[name]
+
+    def get_groups(self):
+        return sorted(self.metabolites_groups.keys())
+
+    def get_groups_members(self, group):
+        return self.metabolites_groups[group]
 
     def get_names(self):
         names = self.get_all_names()
@@ -85,7 +99,7 @@ class Metabolite(object):
         return self
 
     def __repr__(self):
-        output = 'name=%s, no. of multiplets=%d\n' % (self.name, len(self.multiplets))
+        output = 'name=%s, group=%d, no. of multiplets=%d\n' % (self.name, self.group, len(self.multiplets))
         for u in self.multiplets:
             output += '- ' + str(u) + '\n'
         return output.rstrip()

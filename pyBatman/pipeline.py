@@ -99,7 +99,7 @@ class PyBatmanPipeline(object):
 
         return copy_db
 
-    def fit_single_metabolite(self, spectra_dir, metabolite_name, n_burnin, n_sample, n_iter,
+    def fit_metabolites(self, spectra_dir, metabolites, n_burnin, n_sample, n_iter,
                               scale_fac, correct_spectra,
                               verbose=False):
 
@@ -107,7 +107,6 @@ class PyBatmanPipeline(object):
                       self.working_dir, self.db, verbose=verbose)
 
         # get default parameters
-        metabolites = [metabolite_name]
         default = bm.get_default_params(metabolites)
         options = default.set('nItBurnin', n_burnin).set(
             'nItPostBurnin', n_sample).set('scaleFac', scale_fac)
@@ -117,7 +116,6 @@ class PyBatmanPipeline(object):
             bm.background_correct(default, make_plot=self.make_plot)
             bm.baseline_correct(default)
 
-        print 'Fitting %s' % metabolite_name
         meta_fits = self._iterate(bm, options, n_iter)
         # mean_rmse = np.array([out.rmse() for out in meta_fits]).mean()
         return meta_fits
@@ -133,23 +131,39 @@ class PyBatmanPipeline(object):
         verbose = config['verbose']
         n_plots = 10
 
-        metabolites = self.db.get_names()
-        if verbose:
-            print metabolites
-
-        fit_results = {}
-        for name in metabolites:
+        group_fit_results = {}
+        groups = self.db.get_groups()
+        for g in groups:
+            members = self.db.get_groups_members(g)
+            names = [m.name for m in members]
             print
             print '================================================================='
-            print 'Now fitting %s for %s' % (name, spectra_dir)
+            print 'Now fitting group %d (%d): %s' % (g, len(members), names)
             print '================================================================='
             print
-            fit_results[name] = self.fit_single_metabolite(spectra_dir, name, n_burnin, n_sample,
-                                                           n_iter, scale_fac, correct_spectra, verbose=verbose)
-            for i in range(len(fit_results[name])):
-                bmo = fit_results[name][i]
+            batman_outputs = self.fit_metabolites(spectra_dir, names, n_burnin, n_sample,
+                                                     n_iter, scale_fac, correct_spectra, verbose=verbose)
+            group_fit_results[g] = batman_outputs
+            for i in range(len(batman_outputs)):
+                bmo = batman_outputs[i]
                 if self.make_plot and i < n_plots:
                     bmo.plot_fit()
+
+        metabolite_fit_results = {}
+        metabolite_betas = []
+        metabolite_names = []
+        for g in groups:
+            bm_out_list = group_fit_results[g]
+            fit_names, fit_betas = self.get_betas(bm_out_list)
+            for i in range(len(fit_names)):
+                name = fit_names[i]
+                beta = fit_betas[:, i]
+                metabolite_fit_results[name] = beta
+                metabolite_names.append(name)
+                metabolite_betas.append(beta)
+
+        metabolite_betas = np.array(metabolite_betas)
+        metabolite_betas = metabolite_betas.transpose()
 
         # predict the concentrations of metabolites
         print
@@ -157,9 +171,10 @@ class PyBatmanPipeline(object):
         print 'Results'
         print '================================================================='
         print
-        self.plot_betas(metabolites, fit_results, std_concentration, verbose=verbose)
-        df = self.get_concentrations(metabolites, fit_results, std_concentration, verbose=verbose)
-        return df, fit_results
+        self.plot_betas(metabolite_betas, metabolite_names)
+        df = self.get_concentrations(metabolite_betas, metabolite_names,
+                                     metabolite_fit_results, std_concentration)
+        return df, metabolite_fit_results
 
     def save_results(self, sd, df, fit_results, output_dir):
         base_name = os.path.basename(os.path.normpath(sd))
@@ -177,14 +192,8 @@ class PyBatmanPipeline(object):
         df.to_csv(output_csv, index=False)
 
         with open(output_model, 'wb') as f:
-            print 'Saving betas to %s' % output_model
-            betas = {}
-            multiplets = self.db.get_names()
-            for name in multiplets:
-                fit_names, fit_betas = self.get_betas(fit_results[name])
-                b = fit_betas.flatten()
-                betas[name] = b
-            cPickle.dump(betas, f, protocol=cPickle.HIGHEST_PROTOCOL)
+            print 'Saving fit_results to %s' % output_model
+            cPickle.dump(fit_results, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
     def get_betas(self, bm_out_list):
         all_betas = []
@@ -196,20 +205,7 @@ class PyBatmanPipeline(object):
             all_betas.append(betas)
         return names, np.array(all_betas)
 
-    def plot_betas(self, multiplets, fit_results, std_concentration, verbose=False):
-
-        metabolite_betas = []
-        metabolite_names = []
-        for name in multiplets:
-            fit_names, fit_betas = self.get_betas(fit_results[name])
-            b = fit_betas.flatten()
-            metabolite_betas.append(b)
-            metabolite_names.append(name)
-
-        metabolite_betas = np.array(metabolite_betas)
-        metabolite_betas = metabolite_betas.transpose()
-        if verbose:
-            print metabolite_betas, metabolite_betas.shape
+    def plot_betas(self, metabolite_betas, metabolite_names):
 
         ticks = np.arange(len(metabolite_names)) + 1
         if metabolite_betas.shape[0] == 1:
@@ -218,30 +214,14 @@ class PyBatmanPipeline(object):
         else:
             # more than 1 MCMC iterations
             plt.boxplot(metabolite_betas)
-
         plt.xticks(ticks, metabolite_names, rotation='vertical')
         plt.title('Betas')
         plt.show()
 
-    def get_concentrations(self, multiplets, fit_results, std_concentration, verbose=False):
+    def get_concentrations(self, metabolite_betas, metabolite_names,
+                           metabolite_fit_results, std_concentration):
 
-        metabolite_betas = []
-        metabolite_names = []
-        for name in multiplets:
-            fit_names, fit_betas = self.get_betas(fit_results[name])
-            b = fit_betas.flatten()
-            metabolite_betas.append(b)
-            metabolite_names.append(name)
-
-        metabolite_betas = np.array(metabolite_betas)
-        metabolite_betas = metabolite_betas.transpose()
-        if verbose:
-            print metabolite_betas, metabolite_betas.shape
-
-        std_metabolite = self.std_metabolite
-        fit_names, fit_betas = self.get_betas(fit_results[std_metabolite])
-        std_betas = fit_betas.flatten()
-
+        std_betas = metabolite_fit_results[self.std_metabolite]
         beta_m = np.median(metabolite_betas, axis=0)
         beta_std = np.median(std_betas, axis=0)
         predicted = beta_m / beta_std * std_concentration
@@ -429,7 +409,7 @@ class PyBatman(object):
             sink_r()
 
         # cleaning up ..
-        # shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
         if self.verbose:
             print 'Deleted', temp_dir
 

@@ -13,8 +13,8 @@ def load_config():
     with open(user_path) as f:
         config = json.load(f)
         config['pattern'] = config['pattern'] if 'pattern' in config else PATTERN
-        config['verbose'] = True if config['verbose'] == 'True' else False
-        config['correct_spectra'] = True if config['correct_spectra'] == 'True' else False
+        config['verbose'] = True if config['verbose'].lower() == 'true' else False
+        config['correct_spectra'] = True if config['correct_spectra'].lower() == 'true' else False
 
         pp = pprint.PrettyPrinter(indent=4)
         pp.pprint(config)
