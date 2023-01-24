@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(name='pyBatman',
       version='1.0.0',
-      description='NMRbox  Active Directory',
+      description='Pipeline to infer metabolite concentrations using BATMAN',
       long_description='A pipeline to infer metabolite concentrations from 1D NMR data '
           'using BATMAN (Bayesian AuTomated Metabolite Analyser for NMR)',
       author='joewandy',
